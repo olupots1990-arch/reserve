@@ -43,15 +43,27 @@ export interface Reservation {
     guests: number;
 }
 
+export interface MenuItem {
+  name: string;
+  description: string;
+  price: string;
+}
+
+export interface MenuCategory {
+  category: string;
+  items: MenuItem[];
+}
+
 
 export interface Message {
   id: string;
   author: Author;
-  type: 'text' | 'image' | 'video' | 'audio' | 'loading' | 'error' | 'veo_api_key' | 'reservation_confirmation';
+  type: 'text' | 'image' | 'video' | 'audio' | 'loading' | 'error' | 'veo_api_key' | 'reservation_confirmation' | 'menu';
   // FIX: The content of a message is always a string (URL or text). The File object is handled separately.
   content: string;
   prompt?: string;
   grounding?: GroundingChunk[];
   reservationDetails?: Partial<Reservation>;
   actions?: { text: string, payload: string }[];
+  menuData?: MenuCategory[];
 }

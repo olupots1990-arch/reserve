@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 // FIX: Alias 'Blob' from '@google/genai' to 'GenaiBlob' to resolve the name conflict with the browser's native 'Blob' type.
 import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenaiBlob } from '@google/genai';
-import { Author, BotMode, Message, GroundingChunk, Reservation } from './types';
+import { Author, BotMode, Message, GroundingChunk, Reservation, MenuCategory } from './types';
 import * as geminiService from './services/geminiService';
 import { fileToBase64 } from './utils/fileUtils';
 
@@ -26,6 +26,35 @@ const XIcon: React.FC<{ className?: string }> = ({ className }) => (
     <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
 );
 // --- END of Icon Components ---
+
+// --- START of Static Data ---
+const MENU_DATA: MenuCategory[] = [
+    {
+        category: 'Appetizers',
+        items: [
+            { name: 'Gemini Bruschetta', description: 'Toasted baguette with tomato, basil, and a hint of garlic.', price: '$12' },
+            { name: 'Flash-Fried Calamari', description: 'Lightly breaded and served with a spicy marinara.', price: '$15' },
+            { name: 'Prosciutto & Melon', description: 'Fresh melon wrapped in thinly sliced prosciutto.', price: '$14' },
+        ],
+    },
+    {
+        category: 'Main Courses',
+        items: [
+            { name: 'The Gemini Pro Burger', description: 'A juicy beef patty with cheddar, lettuce, tomato, and our secret AI-oli.', price: '$22' },
+            { name: 'Veo-gan Pasta Primavera', description: 'Fresh vegetables and pasta in a light, flavorful tomato sauce.', price: '$20' },
+            { name: 'Filet Mignon "Imagen"', description: 'A perfectly cooked 8oz filet, a true masterpiece.', price: '$45' },
+            { name: 'Roasted "Nano" Chicken', description: 'Half a roasted chicken with herbs and lemon.', price: '$28' },
+        ],
+    },
+    {
+        category: 'Desserts',
+        items: [
+            { name: 'Chocolate Lava Cake', description: 'Warm chocolate cake with a gooey center.', price: '$10' },
+            { name: 'Classic Tiramisu', description: 'Espresso-soaked ladyfingers with mascarpone cream.', price: '$11' },
+        ],
+    },
+];
+// --- END of Static Data ---
 
 // --- START of Audio Utils for Live Chat ---
 function decode(base64: string): Uint8Array {
@@ -142,6 +171,30 @@ const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: stri
                         )}
                     </div>
                 );
+            case 'menu':
+                return (
+                    <div>
+                        <p className="text-sm text-gray-800 mb-3">{message.content}</p>
+                        <div className="space-y-4">
+                            {message.menuData?.map((category, index) => (
+                                <div key={index}>
+                                    <h4 className="text-md font-bold text-emerald-700 border-b-2 border-emerald-200 pb-1 mb-2">{category.category}</h4>
+                                    <ul className="space-y-2">
+                                        {category.items.map((item, itemIndex) => (
+                                            <li key={itemIndex} className="text-sm">
+                                                <div className="flex justify-between">
+                                                    <span className="font-semibold text-gray-800">{item.name}</span>
+                                                    <span className="font-bold text-gray-900">{item.price}</span>
+                                                </div>
+                                                <p className="text-xs text-gray-600 italic pl-1">{item.description}</p>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
             case 'error':
                  return <p className="text-sm text-red-600">{message.content}</p>;
             default:
@@ -221,7 +274,7 @@ const App: React.FC = () => {
     const updateLastMessage = (update: Partial<Message>) => {
         setMessages(prev => {
             const lastMessage = prev[prev.length - 1];
-            if (lastMessage && (lastMessage.type === 'loading' || lastMessage.type === 'text')) {
+            if (lastMessage && (lastMessage.type === 'loading' || lastMessage.type === 'text' || lastMessage.type === 'menu')) {
                 return [...prev.slice(0, -1), { ...lastMessage, ...update, id: lastMessage.id }];
             }
             return [...prev, { ...update, id: Date.now().toString(), author: Author.BOT } as Message];
@@ -417,6 +470,10 @@ const App: React.FC = () => {
                     break;
                 case BotMode.QUICK_RESPONSE:
                 default:
+                    if (/(menu|what do you serve|what's on the menu)/i.test(text)) {
+                        updateLastMessage({ type: 'menu', content: "Of course! Here is our menu. Let me know if you have any questions.", menuData: MENU_DATA });
+                        return;
+                    }
                     if (/(reservation|book a table)/i.test(text)) {
                         setMode(BotMode.MAKE_RESERVATION);
                         handleReservationLogic(text);
