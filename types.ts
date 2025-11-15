@@ -43,10 +43,31 @@ export interface Reservation {
     guests: number;
 }
 
+// --- START Menu & Order Types ---
+
+export enum OrderStatus {
+    PLACED = 'Order Placed',
+    PREPARING = 'Preparing',
+    OUT_FOR_DELIVERY = 'Out for Delivery',
+    DELIVERED = 'Delivered',
+}
+
+export interface CustomizationOption {
+    name: string;
+    priceModifier?: number; // e.g., 1.5 for +$1.50
+}
+
+export interface CustomizationGroup {
+    title: string;
+    type: 'radio' | 'checkbox';
+    options: CustomizationOption[];
+}
+
 export interface MenuItem {
   name: string;
   description: string;
   price: string;
+  customizations?: CustomizationGroup[];
 }
 
 export interface MenuCategory {
@@ -54,16 +75,34 @@ export interface MenuCategory {
   items: MenuItem[];
 }
 
+export interface CartItem {
+    item: MenuItem;
+    selectedCustomizations: CustomizationOption[];
+    finalPrice: number;
+}
+
+export interface ActiveOrder {
+    id: string;
+    items: CartItem[];
+    total: number;
+    status: OrderStatus;
+}
+
+// --- END Menu & Order Types ---
+
 
 export interface Message {
   id: string;
   author: Author;
-  type: 'text' | 'image' | 'video' | 'audio' | 'loading' | 'error' | 'veo_api_key' | 'reservation_confirmation' | 'menu';
-  // FIX: The content of a message is always a string (URL or text). The File object is handled separately.
+  type: 'text' | 'image' | 'video' | 'audio' | 'loading' | 'error' | 'veo_api_key' | 'reservation_confirmation' | 'menu' | 'customization_prompt' | 'order_summary' | 'order_status';
   content: string;
   prompt?: string;
   grounding?: GroundingChunk[];
   reservationDetails?: Partial<Reservation>;
   actions?: { text: string, payload: string }[];
   menuData?: MenuCategory[];
+  // Order flow related properties
+  customizationPrompt?: { item: MenuItem; };
+  orderSummary?: { cart: CartItem[]; };
+  orderStatusDetails?: { orders: ActiveOrder[] };
 }

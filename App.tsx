@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 // FIX: Alias 'Blob' from '@google/genai' to 'GenaiBlob' to resolve the name conflict with the browser's native 'Blob' type.
 import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenaiBlob } from '@google/genai';
-import { Author, BotMode, Message, GroundingChunk, Reservation, MenuCategory } from './types';
+import { Author, BotMode, Message, GroundingChunk, Reservation, MenuCategory, MenuItem, CartItem, CustomizationOption, ActiveOrder, OrderStatus } from './types';
 import * as geminiService from './services/geminiService';
 import { fileToBase64 } from './utils/fileUtils';
 
@@ -34,25 +34,43 @@ const MENU_DATA: MenuCategory[] = [
         items: [
             { name: 'Gemini Bruschetta', description: 'Toasted baguette with tomato, basil, and a hint of garlic.', price: '$12' },
             { name: 'Flash-Fried Calamari', description: 'Lightly breaded and served with a spicy marinara.', price: '$15' },
-            { name: 'Prosciutto & Melon', description: 'Fresh melon wrapped in thinly sliced prosciutto.', price: '$14' },
         ],
     },
     {
         category: 'Main Courses',
         items: [
-            { name: 'The Gemini Pro Burger', description: 'A juicy beef patty with cheddar, lettuce, tomato, and our secret AI-oli.', price: '$22' },
-            { name: 'Veo-gan Pasta Primavera', description: 'Fresh vegetables and pasta in a light, flavorful tomato sauce.', price: '$20' },
+            { 
+                name: 'The Gemini Pro Burger', 
+                description: 'A juicy beef patty with our secret AI-oli.', 
+                price: '$22',
+                customizations: [
+                    { title: 'Cheese', type: 'radio', options: [{ name: 'Cheddar' }, { name: 'Swiss' }, { name: 'No Cheese' }] },
+                    { title: 'Toppings', type: 'checkbox', options: [{ name: 'Bacon', priceModifier: 2 }, { name: 'Avocado', priceModifier: 1.5 }, { name: 'Lettuce' }, { name: 'Tomato' }, { name: 'Onions' }] }
+                ]
+            },
+            { 
+                name: 'Veo-gan Pasta Primavera', 
+                description: 'Fresh vegetables and pasta in a light sauce.', 
+                price: '$20',
+                customizations: [
+                    { title: 'Spice Level', type: 'radio', options: [{ name: 'Mild' }, { name: 'Medium' }, { name: 'Spicy' }] },
+                    { title: 'Add Protein', type: 'radio', options: [{ name: 'Tofu', priceModifier: 4 }, { name: 'No Protein' }] }
+                ]
+            },
             { name: 'Filet Mignon "Imagen"', description: 'A perfectly cooked 8oz filet, a true masterpiece.', price: '$45' },
-            { name: 'Roasted "Nano" Chicken', description: 'Half a roasted chicken with herbs and lemon.', price: '$28' },
         ],
     },
     {
         category: 'Desserts',
         items: [
             { name: 'Chocolate Lava Cake', description: 'Warm chocolate cake with a gooey center.', price: '$10' },
-            { name: 'Classic Tiramisu', description: 'Espresso-soaked ladyfingers with mascarpone cream.', price: '$11' },
         ],
     },
+];
+const FEATURED_ITEMS = [
+    MENU_DATA[1].items[0], // Gemini Pro Burger
+    MENU_DATA[1].items[1], // Veo-gan Pasta
+    MENU_DATA[0].items[1], // Calamari
 ];
 // --- END of Static Data ---
 
@@ -97,7 +115,7 @@ function encode(bytes: Uint8Array): string {
 // --- END of Audio Utils for Live Chat ---
 
 // --- START of Child Components ---
-const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: string) => void; }> = ({ message, onActionClick }) => {
+const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: string, data?: any) => void; }> = ({ message, onActionClick }) => {
     const isUser = message.author === Author.USER;
     const bubbleClasses = isUser
         ? 'bg-emerald-200 self-end'
@@ -195,6 +213,88 @@ const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: stri
                         </div>
                     </div>
                 );
+            case 'customization_prompt':
+                const { item } = message.customizationPrompt!;
+                return (
+                    <div>
+                        <p className="text-sm text-gray-800 mb-2">How would you like your <strong>{item.name}</strong>?</p>
+                        {item.customizations?.map((group, index) => (
+                            <div key={index} className="my-2 p-2 bg-gray-50 rounded-md">
+                                <h5 className="text-xs font-bold mb-1">{group.title}</h5>
+                                <div className="flex flex-wrap gap-2">
+                                    {group.options.map(opt => (
+                                        <button 
+                                            key={opt.name}
+                                            onClick={() => onActionClick?.('SELECT_CUSTOMIZATION', { group, option: opt })}
+                                            className="bg-gray-200 text-xs text-gray-800 py-1 px-2 rounded-full hover:bg-emerald-200"
+                                        >
+                                            {opt.name} {opt.priceModifier ? `(+$${opt.priceModifier.toFixed(2)})` : ''}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                        <button onClick={() => onActionClick?.('CONFIRM_CUSTOMIZATIONS')} className="w-full mt-3 bg-emerald-500 text-white text-xs font-semibold py-1 px-3 rounded-lg hover:bg-emerald-600">Add to Order</button>
+                        <button onClick={() => onActionClick?.('CANCEL_ORDER_ITEM')} className="w-full mt-1 bg-gray-300 text-gray-800 text-xs font-semibold py-1 px-3 rounded-lg hover:bg-gray-400">Cancel</button>
+                    </div>
+                );
+            case 'order_summary':
+                const { cart } = message.orderSummary!;
+                const total = cart.reduce((sum, cartItem) => sum + cartItem.finalPrice, 0);
+                return (
+                    <div>
+                        <p className="text-sm text-gray-800 mb-2"><strong>Your Current Order:</strong></p>
+                        <ul className="space-y-2 text-sm bg-gray-50 p-2 rounded-md">
+                            {cart.map((cartItem, index) => (
+                                <li key={index}>
+                                    <div className="flex justify-between font-semibold">
+                                        <span>{cartItem.item.name}</span>
+                                        <span>${cartItem.finalPrice.toFixed(2)}</span>
+                                    </div>
+                                    <ul className="list-disc list-inside text-xs text-gray-600 pl-2">
+                                        {cartItem.selectedCustomizations.map(opt => <li key={opt.name}>{opt.name}</li>)}
+                                    </ul>
+                                </li>
+                            ))}
+                        </ul>
+                        <div className="flex justify-between font-bold text-md mt-2 pt-2 border-t">
+                            <span>Total:</span>
+                            <span>${total.toFixed(2)}</span>
+                        </div>
+                        <div className="flex gap-2 mt-3">
+                           <button onClick={() => onActionClick?.('PLACE_ORDER')} className="flex-1 bg-emerald-500 text-white text-xs font-semibold py-1 px-3 rounded-lg hover:bg-emerald-600">Place Order</button>
+                           <button onClick={() => onActionClick?.('CLEAR_CART')} className="flex-1 bg-gray-300 text-gray-800 text-xs font-semibold py-1 px-3 rounded-lg hover:bg-gray-400">Clear Cart</button>
+                        </div>
+                    </div>
+                );
+            case 'order_status':
+                 const { orders } = message.orderStatusDetails!;
+                 const statusOrder = Object.values(OrderStatus);
+                 return (
+                     <div>
+                         <p className="text-sm text-gray-800 mb-2">{message.content}</p>
+                         {orders.map(order => (
+                           <div key={order.id} className="p-2 my-2 border rounded-lg bg-gray-50">
+                               <p className="text-sm font-bold">Order ID: {order.id}</p>
+                               <div className="flex items-center justify-between mt-2 text-xs">
+                                   {statusOrder.map((status, i) => {
+                                       const isActive = order.status === status;
+                                       const isCompleted = statusOrder.indexOf(order.status) > i;
+                                       return (
+                                          <React.Fragment key={status}>
+                                            <div className="flex flex-col items-center">
+                                                <div className={`w-4 h-4 rounded-full ${isActive ? 'bg-emerald-500 ring-2 ring-emerald-300' : isCompleted ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
+                                                <p className={`mt-1 ${isActive ? 'font-bold text-emerald-600' : ''}`}>{status}</p>
+                                            </div>
+                                            {i < statusOrder.length - 1 && <div className={`flex-1 h-0.5 mx-1 ${isCompleted ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>}
+                                          </React.Fragment>
+                                       )
+                                   })}
+                               </div>
+                           </div>
+                         ))}
+                     </div>
+                 );
             case 'error':
                  return <p className="text-sm text-red-600">{message.content}</p>;
             default:
@@ -234,9 +334,95 @@ const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: stri
         </div>
     );
 };
+
+const HomePage: React.FC<{ onStartOrdering: () => void }> = ({ onStartOrdering }) => {
+    const [currentIndex, setCurrentIndex] = useState(0);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setCurrentIndex(prev => (prev + 1) % FEATURED_ITEMS.length);
+        }, 5000);
+        return () => clearInterval(interval);
+    }, []);
+
+    return (
+        <div className="relative h-full w-full overflow-hidden">
+            <video autoPlay loop muted className="absolute z-0 w-auto min-w-full min-h-full max-w-none">
+                <source src="https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4" type="video/mp4" />
+                Your browser does not support the video tag.
+            </video>
+            <div className="absolute inset-0 bg-black bg-opacity-50"></div>
+            <div className="relative z-10 flex flex-col items-center justify-center h-full text-white text-center p-4">
+                 <div className="w-full max-w-2xl h-64 md:h-80 relative overflow-hidden rounded-lg shadow-2xl">
+                    {FEATURED_ITEMS.map((item, index) => (
+                        <div
+                            key={item.name}
+                            className={`absolute inset-0 transition-opacity duration-1000 ${index === currentIndex ? 'opacity-100' : 'opacity-0'}`}
+                        >
+                            <img src={`https://picsum.photos/seed/${item.name.replace(/\s/g, '')}/800/600`} alt={item.name} className="w-full h-full object-cover" />
+                             <div className="absolute inset-0 bg-gradient-to-t from-black via-transparent to-transparent"></div>
+                            <div className="absolute bottom-0 left-0 p-4">
+                                <h3 className="text-xl font-bold">{item.name}</h3>
+                                <p className="text-sm">{item.description}</p>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+                <h1 className="text-4xl md:text-5xl font-extrabold mt-6">Welcome to The Gemini Bistro</h1>
+                <p className="mt-2 max-w-xl">Your AI-powered culinary experience starts here. Chat with our bot to book a table, explore our menu, or place an order.</p>
+                <button onClick={onStartOrdering} className="mt-8 bg-emerald-500 text-white font-bold py-3 px-8 rounded-full hover:bg-emerald-600 transition-transform hover:scale-105">
+                    Chat with BistroBot
+                </button>
+            </div>
+        </div>
+    )
+}
+
+const AdminPage: React.FC<{ reservations: Reservation[], orders: ActiveOrder[] }> = ({ reservations, orders }) => {
+    return (
+        <div className="p-4 md:p-6 bg-gray-50 min-h-full">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Admin Dashboard</h2>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white p-4 rounded-lg shadow">
+                    <h3 className="text-lg font-semibold mb-2">Confirmed Reservations ({reservations.length})</h3>
+                    <div className="max-h-96 overflow-y-auto">
+                        {reservations.length > 0 ? (
+                           <ul className="divide-y divide-gray-200">
+                                {reservations.map((res, i) => (
+                                    <li key={i} className="py-2 text-sm">
+                                        <strong>Date:</strong> {res.date}, <strong>Time:</strong> {res.time}, <strong>Guests:</strong> {res.guests}
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : <p className="text-sm text-gray-500">No reservations confirmed yet.</p>}
+                    </div>
+                </div>
+                 <div className="bg-white p-4 rounded-lg shadow">
+                    <h3 className="text-lg font-semibold mb-2">Active Orders ({orders.length})</h3>
+                     <div className="max-h-96 overflow-y-auto">
+                        {orders.length > 0 ? (
+                           <ul className="divide-y divide-gray-200">
+                                {orders.map(order => (
+                                    <li key={order.id} className="py-2 text-sm space-y-1">
+                                       <div className="flex justify-between">
+                                          <strong className="font-bold">ID: {order.id}</strong>
+                                          <span className="font-semibold px-2 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-800">{order.status}</span>
+                                       </div>
+                                       <div><strong>Total:</strong> ${order.total.toFixed(2)}</div>
+                                       <div><strong>Items:</strong> {order.items.map(i => i.item.name).join(', ')}</div>
+                                    </li>
+                                ))}
+                            </ul>
+                        ) : <p className="text-sm text-gray-500">No active orders.</p>}
+                    </div>
+                </div>
+            </div>
+        </div>
+    )
+}
 // --- END of Child Components ---
 
-const App: React.FC = () => {
+const ChatPage: React.FC<{ reservations: Reservation[], setReservations: React.Dispatch<React.SetStateAction<Reservation[]>>, activeOrders: ActiveOrder[], setActiveOrders: React.Dispatch<React.SetStateAction<ActiveOrder[]>> }> = ({ reservations, setReservations, activeOrders, setActiveOrders }) => {
     const [messages, setMessages] = useState<Message[]>([
         { id: 'welcome', author: Author.BOT, type: 'text', content: "Welcome to The Gemini Bistro! I'm BistroBot. How can I help you today? You can ask for my menu, make a reservation, or try one of my special features from the paperclip menu." },
     ]);
@@ -247,9 +433,13 @@ const App: React.FC = () => {
     const [isLiveChat, setIsLiveChat] = useState(false);
     
     // Reservation State
-    const [reservations, setReservations] = useState<Reservation[]>([]);
     const [reservationFlowState, setReservationFlowState] = useState<'idle' | 'collecting_date' | 'collecting_time' | 'collecting_guests' | 'confirming'>('idle');
     const [pendingReservation, setPendingReservation] = useState<Partial<Reservation>>({});
+
+    // Order State
+    const [cart, setCart] = useState<CartItem[]>([]);
+    const [orderFlowState, setOrderFlowState] = useState<'idle' | 'customizing'>('idle');
+    const [currentItemForOrder, setCurrentItemForOrder] = useState<{ item: MenuItem, selectedCustomizations: CustomizationOption[] } | null>(null);
 
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const liveSessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -274,7 +464,7 @@ const App: React.FC = () => {
     const updateLastMessage = (update: Partial<Message>) => {
         setMessages(prev => {
             const lastMessage = prev[prev.length - 1];
-            if (lastMessage && (lastMessage.type === 'loading' || lastMessage.type === 'text' || lastMessage.type === 'menu')) {
+            if (lastMessage && (lastMessage.type === 'loading' || lastMessage.type === 'text' || lastMessage.type === 'menu' || lastMessage.type === 'customization_prompt')) {
                 return [...prev.slice(0, -1), { ...lastMessage, ...update, id: lastMessage.id }];
             }
             return [...prev, { ...update, id: Date.now().toString(), author: Author.BOT } as Message];
@@ -295,8 +485,7 @@ const App: React.FC = () => {
              addMessage({ author: Author.BOT, type: 'error', content: 'Geolocation is not supported by your browser.' });
         }
     };
-
-    // --- START of Reservation Logic ---
+    
     const resetReservationFlow = () => {
         setReservationFlowState('idle');
         setPendingReservation({});
@@ -355,39 +544,18 @@ const App: React.FC = () => {
                      setReservationFlowState('collecting_date');
                 }
                 break;
-
-            case 'collecting_date':
-                currentDetails.date = text;
-                setPendingReservation(currentDetails);
-                askForMissingInfo(currentDetails);
-                break;
-
-            case 'collecting_time':
-                currentDetails.time = text;
-                setPendingReservation(currentDetails);
-                askForMissingInfo(currentDetails);
-                break;
-
+            case 'collecting_date': currentDetails.date = text; setPendingReservation(currentDetails); askForMissingInfo(currentDetails); break;
+            case 'collecting_time': currentDetails.time = text; setPendingReservation(currentDetails); askForMissingInfo(currentDetails); break;
             case 'collecting_guests':
                 const guests = parseInt(text, 10);
-                if (!isNaN(guests) && guests > 0) {
-                    currentDetails.guests = guests;
-                    setPendingReservation(currentDetails);
-                    askForMissingInfo(currentDetails);
-                } else {
-                    addMessage({ author: Author.BOT, type: 'text', content: "Please enter a valid number for guests." });
-                }
+                if (!isNaN(guests) && guests > 0) { currentDetails.guests = guests; setPendingReservation(currentDetails); askForMissingInfo(currentDetails); } 
+                else { addMessage({ author: Author.BOT, type: 'text', content: "Please enter a valid number for guests." }); }
                 break;
-
             case 'confirming':
                 if (text === 'CONFIRM_RESERVATION') {
                     const finalReservation = pendingReservation as Reservation;
                     setReservations(prev => [...prev, finalReservation]);
-                    addMessage({
-                        author: Author.BOT,
-                        type: 'text',
-                        content: `Excellent! Your table for ${finalReservation.guests} is booked for ${finalReservation.date} at ${finalReservation.time}. We look forward to seeing you!`
-                    });
+                    addMessage({ author: Author.BOT, type: 'text', content: `Excellent! Your table for ${finalReservation.guests} is booked for ${finalReservation.date} at ${finalReservation.time}. We look forward to seeing you!` });
                     resetReservationFlow();
                 } else if (text === 'CANCEL_RESERVATION') {
                     addMessage({ author: Author.BOT, type: 'text', content: "No problem, I've cancelled the reservation process." });
@@ -395,9 +563,95 @@ const App: React.FC = () => {
                 }
                 break;
         }
-    }, [reservationFlowState, pendingReservation, askForMissingInfo]);
-    // --- END of Reservation Logic ---
+    }, [reservationFlowState, pendingReservation, askForMissingInfo, setReservations]);
+
+    // --- START Order Logic ---
+    const resetOrderFlow = () => {
+        setOrderFlowState('idle');
+        setCurrentItemForOrder(null);
+    };
+
+    const updateOrderStatus = useCallback((orderId: string, status: OrderStatus) => {
+        setActiveOrders(prevOrders => {
+            const updatedOrders = prevOrders.map(o => o.id === orderId ? { ...o, status } : o);
+            const order = updatedOrders.find(o => o.id === orderId);
+            if (order) {
+                 addMessage({ 
+                    author: Author.BOT, 
+                    type: 'order_status', 
+                    content: `Update for order #${order.id}:`,
+                    orderStatusDetails: { orders: [order] }
+                });
+            }
+            return updatedOrders;
+        });
+    }, [setActiveOrders]);
+
+    const simulateOrderStatus = useCallback((orderId: string) => {
+        setTimeout(() => updateOrderStatus(orderId, OrderStatus.PREPARING), 15000);
+        setTimeout(() => updateOrderStatus(orderId, OrderStatus.OUT_FOR_DELIVERY), 35000);
+        setTimeout(() => updateOrderStatus(orderId, OrderStatus.DELIVERED), 55000);
+    }, [updateOrderStatus]);
+
+    const handleOrderLogic = (action: string, data?: any) => {
+        switch(action) {
+            case 'SELECT_CUSTOMIZATION':
+                 if (currentItemForOrder) {
+                    const { group, option } = data;
+                    let newSelections = [...currentItemForOrder.selectedCustomizations];
+                    if (group.type === 'radio') {
+                        // Remove other options from the same radio group
+                        newSelections = newSelections.filter(sel => !group.options.some((o: CustomizationOption) => o.name === sel.name));
+                    }
+                    // Add or remove checkbox option
+                    const existingIndex = newSelections.findIndex(sel => sel.name === option.name);
+                    if (group.type === 'checkbox' && existingIndex > -1) {
+                         newSelections.splice(existingIndex, 1);
+                    } else {
+                         newSelections.push(option);
+                    }
+                    setCurrentItemForOrder({ ...currentItemForOrder, selectedCustomizations: newSelections });
+                 }
+                break;
+            case 'CONFIRM_CUSTOMIZATIONS':
+                if (currentItemForOrder) {
+                    const basePrice = parseFloat(currentItemForOrder.item.price.replace('$', ''));
+                    const customizationsPrice = currentItemForOrder.selectedCustomizations.reduce((sum, opt) => sum + (opt.priceModifier || 0), 0);
+                    const finalPrice = basePrice + customizationsPrice;
+                    setCart(prev => [...prev, { item: currentItemForOrder.item, selectedCustomizations: currentItemForOrder.selectedCustomizations, finalPrice }]);
+                    addMessage({ author: Author.BOT, type: 'text', content: `Added ${currentItemForOrder.item.name} to your order.` });
+                    resetOrderFlow();
+                }
+                break;
+            case 'CANCEL_ORDER_ITEM':
+                addMessage({ author: Author.BOT, type: 'text', content: 'Cancelled adding item.' });
+                resetOrderFlow();
+                break;
+             case 'CLEAR_CART':
+                setCart([]);
+                addMessage({ author: Author.BOT, type: 'text', content: 'Your cart has been cleared.' });
+                break;
+             case 'PLACE_ORDER':
+                if (cart.length > 0) {
+                    const total = cart.reduce((sum, cartItem) => sum + cartItem.finalPrice, 0);
+                    const orderId = `BISTRO-${Date.now().toString().slice(-4)}`;
+                    const newOrder: ActiveOrder = { id: orderId, items: cart, total, status: OrderStatus.PLACED };
+                    setActiveOrders(prev => [...prev, newOrder]);
+                    setCart([]);
+                    addMessage({ 
+                        author: Author.BOT, 
+                        type: 'order_status', 
+                        content: `Your order has been placed! We'll keep you updated.`,
+                        orderStatusDetails: { orders: [newOrder] }
+                    });
+                    simulateOrderStatus(orderId);
+                }
+                break;
+        }
+    };
     
+    // --- END Order Logic ---
+
     const processUserRequest = useCallback(async (text: string, file?: File) => {
         addMessage({ author: Author.USER, type: 'text', content: text, prompt: file ? text : undefined });
         addMessage({ author: Author.BOT, type: 'loading', content: '' });
@@ -405,80 +659,57 @@ const App: React.FC = () => {
         try {
             let response;
             switch(mode) {
-                case BotMode.THINKING:
-                    response = await geminiService.generateThinkingResponse(text);
-                    updateLastMessage({ type: 'text', content: response.text });
-                    break;
-                case BotMode.SEARCH_GROUNDING:
-                    response = await geminiService.searchWithGoogle(text);
-                    updateLastMessage({ type: 'text', content: response.text, grounding: response.candidates?.[0]?.groundingMetadata?.groundingChunks });
-                    break;
-                case BotMode.MAPS_GROUNDING:
-                    handleGeolocation(async (lat, lon) => {
-                        response = await geminiService.searchWithMaps(text, lat, lon);
-                         updateLastMessage({ type: 'text', content: response.text, grounding: response.candidates?.[0]?.groundingMetadata?.groundingChunks });
-                    });
-                    break;
-                case BotMode.IMAGE_ANALYSIS:
-                    if (!file) throw new Error("Please upload an image for analysis.");
-                    response = await geminiService.analyzeImage(file, text);
-                    updateLastMessage({ type: 'text', content: response.text });
-                    break;
-                 case BotMode.VIDEO_UNDERSTANDING:
-                    if (!file) throw new Error("Please upload a video for analysis.");
-                    response = await geminiService.analyzeVideo(file, text);
-                    updateLastMessage({ type: 'text', content: response.text });
-                    break;
-                case BotMode.IMAGE_EDIT:
-                    if (!file) throw new Error("Please upload an image to edit.");
-                    const editedImageBase64 = await geminiService.editImage(file, text);
-                    updateLastMessage({ type: 'image', content: `data:image/png;base64,${editedImageBase64}`, prompt: text });
-                    break;
-                case BotMode.IMAGE_GEN:
-                    const imageBase64 = await geminiService.generateImage(text, aspectRatio);
-                    updateLastMessage({ type: 'image', content: `data:image/jpeg;base64,${imageBase64}`, prompt: text });
-                    break;
+                case BotMode.THINKING: response = await geminiService.generateThinkingResponse(text); updateLastMessage({ type: 'text', content: response.text }); break;
+                case BotMode.SEARCH_GROUNDING: response = await geminiService.searchWithGoogle(text); updateLastMessage({ type: 'text', content: response.text, grounding: response.candidates?.[0]?.groundingMetadata?.groundingChunks }); break;
+                case BotMode.MAPS_GROUNDING: handleGeolocation(async (lat, lon) => { response = await geminiService.searchWithMaps(text, lat, lon); updateLastMessage({ type: 'text', content: response.text, grounding: response.candidates?.[0]?.groundingMetadata?.groundingChunks }); }); break;
+                case BotMode.IMAGE_ANALYSIS: if (!file) throw new Error("Please upload an image for analysis."); response = await geminiService.analyzeImage(file, text); updateLastMessage({ type: 'text', content: response.text }); break;
+                case BotMode.VIDEO_UNDERSTANDING: if (!file) throw new Error("Please upload a video for analysis."); response = await geminiService.analyzeVideo(file, text); updateLastMessage({ type: 'text', content: response.text }); break;
+                case BotMode.IMAGE_EDIT: if (!file) throw new Error("Please upload an image to edit."); const editedImageBase64 = await geminiService.editImage(file, text); updateLastMessage({ type: 'image', content: `data:image/png;base64,${editedImageBase64}`, prompt: text }); break;
+                case BotMode.IMAGE_GEN: const imageBase64 = await geminiService.generateImage(text, aspectRatio); updateLastMessage({ type: 'image', content: `data:image/jpeg;base64,${imageBase64}`, prompt: text }); break;
+                case BotMode.SPEECH_GEN: const speechBase64 = await geminiService.generateSpeech(text); updateLastMessage({ type: 'audio', content: `data:audio/wav;base64,${speechBase64}` }); break;
+                case BotMode.TRANSCRIBE_AUDIO: if (!file) throw new Error("No audio file provided for transcription."); response = await geminiService.transcribeAudio(file); addMessage({ author: Author.BOT, type: 'text', content: `Transcription: "${response.text}"` }); setMessages(prev => prev.filter(m => m.type !== 'loading')); break;
                 case BotMode.VIDEO_GEN:
                     if (!file) throw new Error("Please upload an image to animate.");
-                    
                     const hasKey = await (window as any).aistudio?.hasSelectedApiKey();
-                    if (!hasKey) {
-                       updateLastMessage({ type: 'veo_api_key', content: "To generate a video with Veo, you need to select a personal API key. This is required for long-running jobs." });
-                       return;
-                    }
+                    if (!hasKey) { updateLastMessage({ type: 'veo_api_key', content: "To generate a video with Veo, you need to select a personal API key." }); return; }
                     try {
                         const videoUrl = await geminiService.generateVideoFromImage(file, text, aspectRatio === '9:16' ? '9:16' : '16:9');
                         updateLastMessage({ type: 'video', content: videoUrl, prompt: text });
                     } catch (e: any) {
-                         if (e.message?.includes("Requested entity was not found")) {
-                              updateLastMessage({ type: 'veo_api_key', content: "Your API key seems to be invalid. Please select a valid key to proceed with video generation." });
-                         } else {
-                            throw e;
-                         }
+                         if (e.message?.includes("Requested entity was not found")) { updateLastMessage({ type: 'veo_api_key', content: "Your API key seems invalid. Please select a valid key." }); } 
+                         else { throw e; }
                     }
-                    break;
-                case BotMode.SPEECH_GEN:
-                    const speechBase64 = await geminiService.generateSpeech(text);
-                    updateLastMessage({ type: 'audio', content: `data:audio/wav;base64,${speechBase64}` });
-                    break;
-                case BotMode.TRANSCRIBE_AUDIO:
-                    if (!file) throw new Error("No audio file provided for transcription.");
-                    response = await geminiService.transcribeAudio(file);
-                    addMessage({ author: Author.BOT, type: 'text', content: `Transcription: "${response.text}"` });
-                    // Remove loading message
-                    setMessages(prev => prev.filter(m => m.type !== 'loading'));
                     break;
                 case BotMode.QUICK_RESPONSE:
                 default:
-                    if (/(menu|what do you serve|what's on the menu)/i.test(text)) {
-                        updateLastMessage({ type: 'menu', content: "Of course! Here is our menu. Let me know if you have any questions.", menuData: MENU_DATA });
+                    // --- START Quick Response Keywords ---
+                    if (/(menu|what do you serve)/i.test(text)) { updateLastMessage({ type: 'menu', content: "Of course! Here is our menu.", menuData: MENU_DATA }); return; }
+                    if (/(reservation|book a table)/i.test(text)) { setMode(BotMode.MAKE_RESERVATION); handleReservationLogic(text); return; }
+                    if (/(view order|my cart|see my order)/i.test(text)) {
+                         if (cart.length > 0) { updateLastMessage({ type: 'order_summary', content: '', orderSummary: { cart } }); }
+                         else { updateLastMessage({ type: 'text', content: "Your cart is currently empty. Ask for the menu to start an order!" }); }
+                         return;
+                    }
+                    if (/(order status|track my order)/i.test(text)) {
+                         if (activeOrders.length > 0) { updateLastMessage({ type: 'order_status', content: 'Here is the status of your active order(s):', orderStatusDetails: { orders: activeOrders } }); }
+                         else { updateLastMessage({ type: 'text', content: "You don't have any active orders." }); }
+                         return;
+                    }
+                    const allItems = MENU_DATA.flatMap(c => c.items);
+                    const orderedItem = allItems.find(item => new RegExp(item.name, 'i').test(text));
+                    if (orderedItem) {
+                        if (orderedItem.customizations) {
+                            setOrderFlowState('customizing');
+                            setCurrentItemForOrder({ item: orderedItem, selectedCustomizations: [] });
+                            updateLastMessage({ type: 'customization_prompt', content: '', customizationPrompt: { item: orderedItem }});
+                        } else {
+                            const basePrice = parseFloat(orderedItem.price.replace('$', ''));
+                            setCart(prev => [...prev, { item: orderedItem, selectedCustomizations: [], finalPrice: basePrice }]);
+                            updateLastMessage({ author: Author.BOT, type: 'text', content: `Added ${orderedItem.name} to your order.` });
+                        }
                         return;
                     }
-                    if (/(reservation|book a table)/i.test(text)) {
-                        setMode(BotMode.MAKE_RESERVATION);
-                        handleReservationLogic(text);
-                        return;
-                    }
+                    // --- END Quick Response Keywords ---
                     response = await geminiService.generateQuickResponse(text);
                     updateLastMessage({ type: 'text', content: response.text });
                     break;
@@ -490,7 +721,7 @@ const App: React.FC = () => {
             setFileForProcessing(null);
             setPromptForFile('');
         }
-    }, [mode, aspectRatio, handleReservationLogic]);
+    }, [mode, aspectRatio, handleReservationLogic, cart, activeOrders, setActiveOrders, simulateOrderStatus]);
     
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -524,6 +755,7 @@ const App: React.FC = () => {
         setMode(selectedMode);
         setIsMenuOpen(false);
         resetReservationFlow();
+        resetOrderFlow();
 
         if (selectedMode === BotMode.MAKE_RESERVATION) {
             addMessage({ author: Author.BOT, type: 'text', content: "I can help with that. You can tell me the date, time, and number of guests, like 'a table for 4 tomorrow at 7pm'." });
@@ -596,20 +828,11 @@ const App: React.FC = () => {
                     const scriptProcessor = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
                     scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
                         const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
-                        // FIX: Replaced inefficient .map with a loop for performance and to resolve potential type issues.
                         const l = inputData.length;
                         const int16 = new Int16Array(l);
-                        for (let i = 0; i < l; i++) {
-                            int16[i] = inputData[i] * 32768;
-                        }
-                        // FIX: Use the aliased `GenaiBlob` type for the payload to `sendRealtimeInput`.
-                        const pcmBlob: GenaiBlob = {
-                            data: encode(new Uint8Array(int16.buffer)),
-                            mimeType: 'audio/pcm;rate=16000',
-                        };
-                        liveSessionPromiseRef.current?.then((session) => {
-                            session.sendRealtimeInput({ media: pcmBlob });
-                        });
+                        for (let i = 0; i < l; i++) { int16[i] = inputData[i] * 32768; }
+                        const pcmBlob: GenaiBlob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
+                        liveSessionPromiseRef.current?.then((session) => { session.sendRealtimeInput({ media: pcmBlob }); });
                     };
                     source.connect(scriptProcessor);
                     scriptProcessor.connect(inputAudioContextRef.current!.destination);
@@ -628,23 +851,12 @@ const App: React.FC = () => {
                         sources.add(source);
                      }
                       if (message.serverContent?.interrupted) {
-                          for (const source of sources.values()) {
-                              source.stop();
-                              sources.delete(source);
-                          }
+                          for (const source of sources.values()) { source.stop(); sources.delete(source); }
                           nextStartTime = 0;
                       }
                 },
-                onerror: (e: ErrorEvent) => {
-                    addMessage({author: Author.BOT, type: 'error', content: `Live chat error: ${e.message}`});
-                    stopLiveChat();
-                },
-                onclose: (e: CloseEvent) => {
-                    if (isLiveChat) { // only show message if it wasn't a manual close
-                        addMessage({author: Author.BOT, type: 'text', content: "Live chat ended."});
-                        stopLiveChat();
-                    }
-                },
+                onerror: (e: ErrorEvent) => { addMessage({author: Author.BOT, type: 'error', content: `Live chat error: ${e.message}`}); stopLiveChat(); },
+                onclose: (e: CloseEvent) => { if (isLiveChat) { addMessage({author: Author.BOT, type: 'text', content: "Live chat ended."}); stopLiveChat(); } },
             },
             config: {
                 responseModalities: [Modality.AUDIO],
@@ -666,8 +878,8 @@ const App: React.FC = () => {
     const currentModeNeedsFile = [BotMode.IMAGE_ANALYSIS, BotMode.VIDEO_UNDERSTANDING, BotMode.IMAGE_EDIT, BotMode.VIDEO_GEN].includes(mode);
 
     return (
-        <div className="flex flex-col h-screen bg-gray-100 font-sans">
-            <header className="bg-emerald-600 text-white p-3 flex items-center shadow-md">
+        <div className="flex flex-col h-full bg-gray-100 font-sans">
+            <header className="bg-emerald-600 text-white p-3 flex items-center shadow-md shrink-0">
                 <BotIcon className="w-10 h-10 mr-3"/>
                 <div>
                     <h1 className="text-lg font-bold">BistroBot</h1>
@@ -677,12 +889,12 @@ const App: React.FC = () => {
             
             <main className="flex-1 overflow-y-auto p-4 bg-cover bg-center" style={{backgroundImage: "url('https://picsum.photos/seed/whatsappbg/1000/1500')"}}>
                 <div className="flex flex-col">
-                    {messages.map((msg) => <MessageBubble key={msg.id} message={msg} onActionClick={handleReservationLogic} />)}
+                    {messages.map((msg) => <MessageBubble key={msg.id} message={msg} onActionClick={mode === BotMode.MAKE_RESERVATION ? handleReservationLogic : handleOrderLogic} />)}
                 </div>
                 <div ref={messagesEndRef} />
             </main>
 
-            <footer className="bg-gray-200 p-2">
+            <footer className="bg-gray-200 p-2 shrink-0">
                  {currentModeNeedsFile && fileForProcessing && (
                     <div className="p-2 bg-white rounded-t-lg">
                         <div className="flex items-center justify-between">
@@ -735,9 +947,10 @@ const App: React.FC = () => {
                         placeholder={
                             currentModeNeedsFile ? "Upload a file to type..." :
                             mode === BotMode.MAKE_RESERVATION ? "Enter reservation details..." :
+                            orderFlowState === 'customizing' ? "Select options above or type to cancel" :
                             "Type a message..."
                         }
-                        disabled={currentModeNeedsFile || (mode === BotMode.MAKE_RESERVATION && reservationFlowState === 'confirming')}
+                        disabled={currentModeNeedsFile || (mode === BotMode.MAKE_RESERVATION && reservationFlowState === 'confirming') || orderFlowState === 'customizing'}
                         className="flex-1 p-3 border-none rounded-full focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
                     />
                     <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,video/*,audio/*" />
@@ -755,5 +968,37 @@ const App: React.FC = () => {
         </div>
     );
 };
+
+
+const App: React.FC = () => {
+    type Page = 'homepage' | 'customer' | 'admin';
+    const [currentPage, setCurrentPage] = useState<Page>('homepage');
+    const [reservations, setReservations] = useState<Reservation[]>([]);
+    const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([]);
+
+    const renderPage = () => {
+        switch (currentPage) {
+            case 'homepage':
+                return <HomePage onStartOrdering={() => setCurrentPage('customer')} />;
+            case 'customer':
+                return <ChatPage reservations={reservations} setReservations={setReservations} activeOrders={activeOrders} setActiveOrders={setActiveOrders} />;
+            case 'admin':
+                return <AdminPage reservations={reservations} orders={activeOrders} />;
+        }
+    };
+    
+    return (
+        <div className="flex flex-col h-screen bg-gray-100 font-sans">
+            <nav className="bg-gray-800 text-white p-2 flex justify-center items-center gap-4 text-sm font-semibold shadow-md z-20">
+                 <button onClick={() => setCurrentPage('homepage')} className={`px-3 py-1 rounded-md transition-colors ${currentPage === 'homepage' ? 'bg-emerald-500' : 'hover:bg-gray-700'}`}>Home</button>
+                 <button onClick={() => setCurrentPage('customer')} className={`px-3 py-1 rounded-md transition-colors ${currentPage === 'customer' ? 'bg-emerald-500' : 'hover:bg-gray-700'}`}>Customer Chat</button>
+                 <button onClick={() => setCurrentPage('admin')} className={`px-3 py-1 rounded-md transition-colors ${currentPage === 'admin' ? 'bg-emerald-500' : 'hover:bg-gray-700'}`}>Admin</button>
+            </nav>
+            <div className="flex-1 overflow-hidden">
+                {renderPage()}
+            </div>
+        </div>
+    );
+}
 
 export default App;
