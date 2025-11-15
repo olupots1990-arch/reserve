@@ -1,7 +1,8 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
-import { Author, BotMode, Message, GroundingChunk } from './types';
+// FIX: Alias 'Blob' from '@google/genai' to 'GenaiBlob' to resolve the name conflict with the browser's native 'Blob' type.
+import { GoogleGenAI, LiveServerMessage, Modality, Blob as GenaiBlob } from '@google/genai';
+import { Author, BotMode, Message, GroundingChunk, Reservation } from './types';
 import * as geminiService from './services/geminiService';
 import { fileToBase64 } from './utils/fileUtils';
 
@@ -67,7 +68,7 @@ function encode(bytes: Uint8Array): string {
 // --- END of Audio Utils for Live Chat ---
 
 // --- START of Child Components ---
-const MessageBubble: React.FC<{ message: Message }> = ({ message }) => {
+const MessageBubble: React.FC<{ message: Message; onActionClick?: (payload: string) => void; }> = ({ message, onActionClick }) => {
     const isUser = message.author === Author.USER;
     const bubbleClasses = isUser
         ? 'bg-emerald-200 self-end'
@@ -114,6 +115,31 @@ const MessageBubble: React.FC<{ message: Message }> = ({ message }) => {
                          <p className="text-xs text-gray-500 mt-2">
                            For more info, see the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">billing documentation</a>.
                          </p>
+                    </div>
+                );
+            case 'reservation_confirmation':
+                const { date, time, guests } = message.reservationDetails || {};
+                return (
+                    <div>
+                        <p className="text-sm text-gray-800 mb-2">{message.content}</p>
+                        <div className="text-sm bg-gray-100 p-2 rounded-md border border-gray-200 space-y-1">
+                            {date && <p><strong>Date:</strong> {date}</p>}
+                            {time && <p><strong>Time:</strong> {time}</p>}
+                            {guests && <p><strong>Guests:</strong> {guests}</p>}
+                        </div>
+                        {message.actions && (
+                            <div className="flex gap-2 mt-3">
+                                {message.actions.map(action => (
+                                    <button
+                                        key={action.payload}
+                                        onClick={() => onActionClick?.(action.payload)}
+                                        className={`${action.payload === 'CANCEL_RESERVATION' ? 'bg-gray-300 text-gray-800 hover:bg-gray-400' : 'bg-emerald-500 text-white hover:bg-emerald-600'} text-xs font-semibold py-1 px-3 rounded-lg transition-colors`}
+                                    >
+                                        {action.text}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 );
             case 'error':
@@ -167,11 +193,15 @@ const App: React.FC = () => {
     const [isRecording, setIsRecording] = useState(false);
     const [isLiveChat, setIsLiveChat] = useState(false);
     
+    // Reservation State
+    const [reservations, setReservations] = useState<Reservation[]>([]);
+    const [reservationFlowState, setReservationFlowState] = useState<'idle' | 'collecting_date' | 'collecting_time' | 'collecting_guests' | 'confirming'>('idle');
+    const [pendingReservation, setPendingReservation] = useState<Partial<Reservation>>({});
+
     const mediaRecorderRef = useRef<MediaRecorder | null>(null);
     const liveSessionPromiseRef = useRef<Promise<any> | null>(null);
     const inputAudioContextRef = useRef<AudioContext | null>(null);
     const outputAudioContextRef = useRef<AudioContext | null>(null);
-    const liveTranscriptRef = useRef<{user: string, bot: string, history: {author: Author, text: string}[]}>({user: "", bot: "", history: []});
     
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -185,16 +215,16 @@ const App: React.FC = () => {
     }, [messages]);
 
     const addMessage = (message: Omit<Message, 'id'>) => {
-        setMessages(prev => [...prev, { ...message, id: Date.now().toString() }]);
+        setMessages(prev => [...prev, { ...message, id: Date.now().toString() + Math.random() }]);
     };
     
     const updateLastMessage = (update: Partial<Message>) => {
         setMessages(prev => {
             const lastMessage = prev[prev.length - 1];
-            if (lastMessage && lastMessage.type === 'loading') {
+            if (lastMessage && (lastMessage.type === 'loading' || lastMessage.type === 'text')) {
                 return [...prev.slice(0, -1), { ...lastMessage, ...update, id: lastMessage.id }];
             }
-            return prev;
+            return [...prev, { ...update, id: Date.now().toString(), author: Author.BOT } as Message];
         });
     };
     
@@ -212,6 +242,108 @@ const App: React.FC = () => {
              addMessage({ author: Author.BOT, type: 'error', content: 'Geolocation is not supported by your browser.' });
         }
     };
+
+    // --- START of Reservation Logic ---
+    const resetReservationFlow = () => {
+        setReservationFlowState('idle');
+        setPendingReservation({});
+        setMode(BotMode.QUICK_RESPONSE);
+    };
+    
+    const askForMissingInfo = useCallback((currentDetails: Partial<Reservation>) => {
+        if (!currentDetails.date) {
+            setReservationFlowState('collecting_date');
+            addMessage({ author: Author.BOT, type: 'text', content: "What date would you like to book for?" });
+        } else if (!currentDetails.time) {
+            setReservationFlowState('collecting_time');
+            addMessage({ author: Author.BOT, type: 'text', content: "And what time?" });
+        } else if (!currentDetails.guests) {
+            setReservationFlowState('collecting_guests');
+            addMessage({ author: Author.BOT, type: 'text', content: "How many guests will be joining?" });
+        } else {
+            setReservationFlowState('confirming');
+            addMessage({
+                author: Author.BOT,
+                type: 'reservation_confirmation',
+                content: "Please confirm your reservation details:",
+                reservationDetails: currentDetails,
+                actions: [
+                    { text: 'Confirm', payload: 'CONFIRM_RESERVATION' },
+                    { text: 'Cancel', payload: 'CANCEL_RESERVATION' }
+                ]
+            });
+        }
+    }, []);
+
+    const handleReservationLogic = useCallback(async (text: string) => {
+        if (reservationFlowState !== 'idle' && !['CONFIRM_RESERVATION', 'CANCEL_RESERVATION'].includes(text)) {
+            addMessage({ author: Author.USER, type: 'text', content: text });
+        }
+
+        let currentDetails = { ...pendingReservation };
+
+        switch(reservationFlowState) {
+            case 'idle':
+                addMessage({ author: Author.USER, type: 'text', content: text });
+                addMessage({ author: Author.BOT, type: 'loading', content: '' });
+                try {
+                    const extractedDetails = await geminiService.extractReservationDetails(text);
+                    updateLastMessage({ type: 'text', content: "Let me check that for you..." });
+                    currentDetails = {
+                        date: extractedDetails.date || undefined,
+                        time: extractedDetails.time || undefined,
+                        guests: extractedDetails.guests || undefined
+                    };
+                    setPendingReservation(currentDetails);
+                    askForMissingInfo(currentDetails);
+                } catch (error) {
+                     console.error(error);
+                     updateLastMessage({ type: 'error', content: `Sorry, I had trouble understanding that. Could you please tell me the date for the reservation?` });
+                     setReservationFlowState('collecting_date');
+                }
+                break;
+
+            case 'collecting_date':
+                currentDetails.date = text;
+                setPendingReservation(currentDetails);
+                askForMissingInfo(currentDetails);
+                break;
+
+            case 'collecting_time':
+                currentDetails.time = text;
+                setPendingReservation(currentDetails);
+                askForMissingInfo(currentDetails);
+                break;
+
+            case 'collecting_guests':
+                const guests = parseInt(text, 10);
+                if (!isNaN(guests) && guests > 0) {
+                    currentDetails.guests = guests;
+                    setPendingReservation(currentDetails);
+                    askForMissingInfo(currentDetails);
+                } else {
+                    addMessage({ author: Author.BOT, type: 'text', content: "Please enter a valid number for guests." });
+                }
+                break;
+
+            case 'confirming':
+                if (text === 'CONFIRM_RESERVATION') {
+                    const finalReservation = pendingReservation as Reservation;
+                    setReservations(prev => [...prev, finalReservation]);
+                    addMessage({
+                        author: Author.BOT,
+                        type: 'text',
+                        content: `Excellent! Your table for ${finalReservation.guests} is booked for ${finalReservation.date} at ${finalReservation.time}. We look forward to seeing you!`
+                    });
+                    resetReservationFlow();
+                } else if (text === 'CANCEL_RESERVATION') {
+                    addMessage({ author: Author.BOT, type: 'text', content: "No problem, I've cancelled the reservation process." });
+                    resetReservationFlow();
+                }
+                break;
+        }
+    }, [reservationFlowState, pendingReservation, askForMissingInfo]);
+    // --- END of Reservation Logic ---
     
     const processUserRequest = useCallback(async (text: string, file?: File) => {
         addMessage({ author: Author.USER, type: 'text', content: text, prompt: file ? text : undefined });
@@ -285,6 +417,11 @@ const App: React.FC = () => {
                     break;
                 case BotMode.QUICK_RESPONSE:
                 default:
+                    if (/(reservation|book a table)/i.test(text)) {
+                        setMode(BotMode.MAKE_RESERVATION);
+                        handleReservationLogic(text);
+                        return;
+                    }
                     response = await geminiService.generateQuickResponse(text);
                     updateLastMessage({ type: 'text', content: response.text });
                     break;
@@ -296,10 +433,17 @@ const App: React.FC = () => {
             setFileForProcessing(null);
             setPromptForFile('');
         }
-    }, [mode, aspectRatio]);
+    }, [mode, aspectRatio, handleReservationLogic]);
     
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
+         if (mode === BotMode.MAKE_RESERVATION) {
+            if (!input.trim()) return;
+            handleReservationLogic(input);
+            setInput('');
+            return;
+        }
+
         if (!input.trim() && !fileForProcessing) return;
         const textToSend = fileForProcessing ? promptForFile : input;
         processUserRequest(textToSend, fileForProcessing ?? undefined);
@@ -322,6 +466,14 @@ const App: React.FC = () => {
     const handleModeSelect = (selectedMode: BotMode) => {
         setMode(selectedMode);
         setIsMenuOpen(false);
+        resetReservationFlow();
+
+        if (selectedMode === BotMode.MAKE_RESERVATION) {
+            addMessage({ author: Author.BOT, type: 'text', content: "I can help with that. You can tell me the date, time, and number of guests, like 'a table for 4 tomorrow at 7pm'." });
+            setReservationFlowState('idle');
+            return;
+        }
+
         const needsFile = [BotMode.IMAGE_ANALYSIS, BotMode.VIDEO_UNDERSTANDING, BotMode.IMAGE_EDIT, BotMode.VIDEO_GEN].includes(selectedMode);
         if (needsFile) {
             fileInputRef.current?.click();
@@ -335,12 +487,11 @@ const App: React.FC = () => {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             const recorder = new MediaRecorder(stream);
             mediaRecorderRef.current = recorder;
-            // FIX: Use window.Blob to avoid conflict with Blob type from @google/genai
-            const audioChunks: window.Blob[] = [];
+            // FIX: Use the native 'Blob' type now that the naming conflict is resolved. 'window.Blob' is not a valid type annotation.
+            const audioChunks: Blob[] = [];
             recorder.ondataavailable = event => audioChunks.push(event.data);
             recorder.onstop = () => {
-                // FIX: Use window.Blob to avoid conflict with Blob type from @google/genai
-                const audioBlob = new window.Blob(audioChunks, { type: 'audio/webm' });
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                 const audioFile = new File([audioBlob], "recording.webm", { type: 'audio/webm' });
                 addMessage({ author: Author.USER, type: 'audio', content: URL.createObjectURL(audioFile) });
                 setMode(BotMode.TRANSCRIBE_AUDIO); // Switch mode for processing
@@ -394,7 +545,8 @@ const App: React.FC = () => {
                         for (let i = 0; i < l; i++) {
                             int16[i] = inputData[i] * 32768;
                         }
-                        const pcmBlob: Blob = {
+                        // FIX: Use the aliased `GenaiBlob` type for the payload to `sendRealtimeInput`.
+                        const pcmBlob: GenaiBlob = {
                             data: encode(new Uint8Array(int16.buffer)),
                             mimeType: 'audio/pcm;rate=16000',
                         };
@@ -468,7 +620,7 @@ const App: React.FC = () => {
             
             <main className="flex-1 overflow-y-auto p-4 bg-cover bg-center" style={{backgroundImage: "url('https://picsum.photos/seed/whatsappbg/1000/1500')"}}>
                 <div className="flex flex-col">
-                    {messages.map((msg) => <MessageBubble key={msg.id} message={msg} />)}
+                    {messages.map((msg) => <MessageBubble key={msg.id} message={msg} onActionClick={handleReservationLogic} />)}
                 </div>
                 <div ref={messagesEndRef} />
             </main>
@@ -523,8 +675,12 @@ const App: React.FC = () => {
                         type="text"
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder={currentModeNeedsFile ? "Upload a file to type..." : "Type a message..."}
-                        disabled={currentModeNeedsFile}
+                        placeholder={
+                            currentModeNeedsFile ? "Upload a file to type..." :
+                            mode === BotMode.MAKE_RESERVATION ? "Enter reservation details..." :
+                            "Type a message..."
+                        }
+                        disabled={currentModeNeedsFile || (mode === BotMode.MAKE_RESERVATION && reservationFlowState === 'confirming')}
                         className="flex-1 p-3 border-none rounded-full focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
                     />
                     <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*,video/*,audio/*" />

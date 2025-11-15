@@ -148,6 +148,43 @@ export const editImage = async (imageFile: File, prompt: string): Promise<string
     throw new Error("No image generated");
 };
 
+export const extractReservationDetails = async (prompt: string): Promise<{date: string | null, time: string | null, guests: number | null}> => {
+    const ai = getGeminiAI();
+    const today = new Date().toISOString().split('T')[0];
+
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `Today's date is ${today}. Extract reservation details from the following user request: "${prompt}"`,
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    date: {
+                        type: Type.STRING,
+                        description: 'The date of the reservation in YYYY-MM-DD format. Infer from context like "tomorrow". Return null if not specified.',
+                    },
+                    time: {
+                        type: Type.STRING,
+                        description: 'The time of the reservation in HH:MM (24-hour) format. Return null if not specified.',
+                    },
+                    guests: {
+                        type: Type.INTEGER,
+                        description: 'The number of guests for the reservation. Return null if not specified.',
+                    },
+                },
+            },
+        },
+    });
+
+    try {
+        return JSON.parse(response.text);
+    } catch (e) {
+        console.error("Failed to parse reservation details JSON:", e);
+        return { date: null, time: null, guests: null };
+    }
+};
+
 
 export const generateVideoFromImage = async (imageFile: File, prompt: string, aspectRatio: '16:9' | '9:16') => {
     const ai = getGeminiAI();
