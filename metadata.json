@@ -1,0 +1,9 @@
+{
+  "name": "BistroBot - Your AI Restaurant Concierge",
+  "description": "BistroBot is an AI-powered restaurant chatbot designed to handle reservations, answer menu questions, provide location information, and even offer creative interactions like generating images of dishes or animating food photos. It leverages a suite of Gemini models to provide fast, intelligent, and engaging responses in a familiar chat interface.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
