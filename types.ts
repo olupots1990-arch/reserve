@@ -1,4 +1,5 @@
 
+
 export enum Author {
   USER = 'user',
   BOT = 'bot',
@@ -67,6 +68,7 @@ export interface MenuItem {
   name: string;
   description: string;
   price: string;
+  imageSrc: string; // Added for the gallery view
   customizations?: CustomizationGroup[];
 }
 
@@ -89,6 +91,14 @@ export interface ActiveOrder {
 }
 
 // --- END Menu & Order Types ---
+
+// --- START Homepage Types ---
+export interface FeaturedItem {
+    name: string;
+    description: string;
+    imageSrc: string;
+}
+// --- END Homepage Types ---
 
 
 export interface Message {
